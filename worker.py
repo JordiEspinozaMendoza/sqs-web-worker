@@ -8,6 +8,7 @@ from PIL import Image
 import io
 from utils.images import labelImage
 from utils.utils import getPredictionFromRoboflow
+import base64
 
 load_dotenv()
 
@@ -20,18 +21,18 @@ stop = len(sys.argv) > 1 and sys.argv[1] == 'stop'
 
 run = True
 
+print("Waiting to poll messages")
+
+        
 while run:
     if stop:
         
         run = False
-    
-    
     message = client.receive_message(QueueUrl=QUEUE_URL, WaitTimeSeconds=2)
     
     if message and 'Messages' in message and message['Messages']:
 
         try:
-            # Parse the JSON
             records = ""
             object_key = ""
             bucket_name = os.environ.get("BUCKET_NAME")
@@ -44,44 +45,50 @@ while run:
             
             if object_key:
                 s3 = boto3.resource('s3')
+                s3Client = boto3.client("s3")
                 
-                image = s3.Object(bucket_name, object_key).get()
-                metadata = image['Metadata']
+                imageResponse = s3.Object(bucket_name, object_key).get()
+                metadata = imageResponse['Metadata']
                 socketId = metadata.get("socketid")
-                image = image['Body'].read()
-                
-                print(metadata)
-                
-                detections = getPredictionFromRoboflow(image)
-                
-                file = Image.open(io.BytesIO(image))
+                status = metadata.get("status")
+                image_url = f"https://{bucket_name}.s3.amazonaws.com/{object_key}"
 
-                newImage = labelImage(file, detections)
-                newImage = Image.open(io.BytesIO(newImage))
-                s3=boto3.client("s3")
-                s3.upload_fileobj(
-                    io.BytesIO(newImage),
-                    bucket_name,
-                    filename,
-                    ExtraArgs={
-                        "Metadata": {"socketId": socketId, "status": "uploaded"},
-                    }
-                )
-                # Save image s3
-                #s3.Bucket(bucket_name).put_object(Key=f'processed/{filename}', Body=newImage)
-            
-            
-            # s3image.upload_file('new.jpg', bucket_name,
-                     # f'small/{filename}',  extra_args={'ACL': 'public-read'}) 
-            # print('imagen almacenada')
-            
-                url = f'{os.environ.get("API_URL")}/image/uploaded/'
-                params = {"object_key": object_key}
+                if status is None:
+                    requestImage = requests.get(image_url, stream=True)
+                    requestImage.raw.decode_content = True
                     
-                req = requests.post(url, json=params)
+                    if requestImage.status_code == 200:
+                        file_image = Image.open(requestImage.raw)
+                        
+                        if file_image:
+                            detections = getPredictionFromRoboflow(image_url)
+                            
+                            newImage = labelImage(file_image, detections)
+    
+                            response = s3Client.upload_fileobj(
+                                io.BytesIO(newImage),
+                                bucket_name,
+                                filename,
+                                ExtraArgs={
+                                    "ContentType": file_image.format,
+                                    "Metadata": {"socketId": socketId, "status": "uploaded"},
+                                }
+                            )
+
+                    else:
+                        print(f"Error: Unable to fetch image from {image_url}. Status code: {requestImage.status_code}")
+                else:
+                    url = f'{os.environ.get("API_URL")}/image/uploaded/'
+                    params = {"object_key": object_key, "url": image_url,"socketId": socketId}
+                        
+                    req = requests.post(url, json=params)
+                    
             client.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=receipt_handle)
+
             
         except Exception as e:
-            print(e)
-            client.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=receipt_handle )
+            error = str(e)
+
+            print(error, sys.exc_info()[-1].tb_lineno)
+            client.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=receipt_handle)
     

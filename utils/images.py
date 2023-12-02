@@ -32,7 +32,13 @@ def labelImage(image, detections):
                 1,
             )
 
-        return cv2.imencode(".jpg", image)[1].tobytes()
+        pic_IObytes = io.BytesIO()
+
+        plt.imsave(pic_IObytes, image, format="png")
+        pic_IObytes.seek(0)
+        pic_hash = pic_IObytes.read()
+
+        return pic_hash
 
     except Exception as e:
         print(e, "labelImage")
